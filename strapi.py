@@ -3,11 +3,18 @@ from io import BytesIO
 import requests
 
 
-def get_strapi_products(url, headers, product_id=None):
+def get_strapi_products(host, headers):
+    products_url = f'{host}/api/products'
     params = {'populate': 'picture'}
-    if product_id:
-        url += f'/{product_id}'
-    response = requests.get(url, headers=headers, params=params)
+    response = requests.get(products_url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_strapi_product(host, headers, product_id):
+    product_url = f'{host}/api/products/{product_id}'
+    params = {'populate': 'picture'}
+    response = requests.get(product_url, headers=headers, params=params)
     response.raise_for_status()
     return response.json()
 
@@ -67,3 +74,18 @@ def create_user(host, headers, email, user_name):
     if response.ok:
         return True
     return False
+
+
+def get_user_cart(host, chat_id, headers):
+    cart_url = f'{host}/api/carts'
+    cart_params = {'filters[telegram_id][$eq]': chat_id, 'populate[0]': 'cart_products.product'}
+    cart_response = requests.get(cart_url, headers=headers, params=cart_params)
+    cart_response.raise_for_status()
+    user_cart = cart_response.json()
+    return user_cart
+
+
+def delete_product(host, headers, cart_product_id):
+    delete_product_url = f'{host}/api/cart-products/{cart_product_id}'
+    response = requests.delete(delete_product_url, headers=headers)
+    response.raise_for_status()

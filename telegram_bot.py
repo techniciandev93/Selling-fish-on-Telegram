@@ -3,7 +3,6 @@ import logging
 from functools import partial
 
 import redis
-import requests
 import validators
 from environs import Env
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,7 +10,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Filters, Updater
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
-from strapi import get_strapi_products, get_image_byte, create_user, add_product_to_cart
+from strapi import get_strapi_products, get_image_byte, create_user, add_product_to_cart, get_strapi_product, \
+    get_user_cart, delete_product
 
 _database = None
 
@@ -23,9 +23,12 @@ def start(update, context, host, headers):
 
 
 def handle_menu(update, context, host, headers):
-    products_url = f'{host}/api/products'
     query = update.callback_query
-    product = get_strapi_products(products_url, headers, query.data)
+
+    if query.data.startswith('cart'):
+        return handle_cart(update, context, host, headers)
+
+    product = get_strapi_product(host, headers, query.data)
     image_byte = get_image_byte(host, product)
 
     caption = f"{product['data']['attributes']['title']} " \
@@ -45,18 +48,16 @@ def handle_menu(update, context, host, headers):
 
 
 def handle_cart(update, context, host, headers):
+
     chat_id = update.callback_query.message.chat_id
     keyboard = []
     message = 'Корзина:\n\n'
     total_price_all_products = 0
     cart = {}
-    cart_url = f'{host}/api/carts?filters[telegram_id][$eq]={chat_id}&populate[0]=cart_products.product'
 
-    cart_response = requests.get(cart_url, headers=headers)
-    cart_response.raise_for_status()
-    cart_user = cart_response.json()
-    if cart_user.get('data'):
-        for cart_product in cart_user['data'][0]['attributes']['cart_products']['data']:
+    user_cart = get_user_cart(host, chat_id, headers)
+    if user_cart.get('data'):
+        for cart_product in user_cart['data'][0]['attributes']['cart_products']['data']:
             cart_product_id = cart_product['attributes']['product']['data']['id']
             cart_product_price = cart_product['attributes']['product']['data']['attributes']['price']
             cart_product_title = cart_product['attributes']['product']['data']['attributes']['title']
@@ -69,7 +70,7 @@ def handle_cart(update, context, host, headers):
                 cart[cart_product_id] = {'count': 1,
                                          'total_price': cart_product_price,
                                          'cart_product_ids': [cart_product['id']],
-                                         'cart_id': cart_user['data'][0]['id']}
+                                         'cart_id': user_cart['data'][0]['id']}
 
             if 'title' not in cart[cart_product_id]:
                 cart[cart_product_id]['title'] = cart_product_title
@@ -95,13 +96,31 @@ def handle_cart(update, context, host, headers):
 
 
 def handle_description(update, context, host, headers):
-    products_url = f'{host}/api/products'
+
     if update.callback_query:
+
+        if update.callback_query.data.startswith('pay'):
+            return handle_pay(update, context, host, headers)
+
+        elif update.callback_query.data.startswith('cart'):
+            return handle_cart(update, context, host, headers)
+
+        elif update.callback_query.data.startswith('delete_products'):
+            context.bot.delete_message(chat_id=update.effective_chat.id,
+                                       message_id=update.callback_query.message.message_id)
+            return handle_delete_product_in_cart(update, context, host, headers)
+
+        elif update.callback_query.data.startswith('add_to_cart'):
+            add_product_to_cart(host, update.callback_query.message.chat_id, update.callback_query.data, headers)
+            context.bot.delete_message(chat_id=update.effective_chat.id,
+                                       message_id=update.callback_query.message.message_id)
+            return 'HANDLE_MENU'
+
         if update.callback_query.data != 'cart':
             context.bot.delete_message(chat_id=update.effective_chat.id,
                                        message_id=update.callback_query.message.message_id)
     else:
-        products = get_strapi_products(products_url, headers)
+        products = get_strapi_products(host, headers)
         keyboard = []
         for product in products['data']:
             keyboard.append([InlineKeyboardButton(product['attributes']['title'], callback_data=product['id'])])
@@ -131,10 +150,8 @@ def handle_delete_product_in_cart(update, context, host, headers):
     cart_products = update.callback_query.data
     split_cart_product_ids = cart_products.split('_')[-1]
     for cart_product_id in split_cart_product_ids.split(','):
-        delete_products_url = f'{host}/api/cart-products/{cart_product_id}'
-        response = requests.delete(delete_products_url, headers=headers)
-        response.raise_for_status()
-    return 'HANDLE_DESCRIPTION'
+        delete_product(host, headers, cart_product_id)
+    return 'HANDLE_MENU'
 
 
 def handle_users_reply(update, context, host, headers):
@@ -151,6 +168,7 @@ def handle_users_reply(update, context, host, headers):
     Если пользователь захочет начать общение с ботом заново, он также может воспользоваться этой командой.
     """
     db = get_database_connection()
+
     if update.message:
         user_reply = update.message.text
         chat_id = update.message.chat_id
@@ -162,29 +180,21 @@ def handle_users_reply(update, context, host, headers):
 
     if user_reply == '/start':
         user_state = 'START'
-    elif user_reply.startswith('add_to_cart'):
-        add_product_to_cart(host, chat_id, user_reply, headers)
-        user_state = 'HANDLE_DESCRIPTION'
-    elif user_reply.startswith('cart'):
-        user_state = 'HANDLE_CART'
-    elif user_reply.startswith('delete_products'):
-        handle_delete_product_in_cart(update, context, host, headers)
-        user_state = 'HANDLE_DESCRIPTION'
-    elif user_reply.startswith('back_to_menu'):
-        user_state = 'HANDLE_DESCRIPTION'
-    elif user_reply.startswith('pay'):
-        user_state = 'WAITING_EMAIL'
     else:
         user_state = db.get(chat_id).decode('utf-8')
+
+    print(user_reply)
+    print(user_state)
 
     states_functions = {
         'START': start,
         'HANDLE_MENU': handle_menu,
         'HANDLE_DESCRIPTION': handle_description,
         'HANDLE_CART': handle_cart,
-        'WAITING_EMAIL': handle_pay
+        'WAITING_EMAIL': handle_pay,
     }
-    state_handler = states_functions[user_state]
+
+    state_handler = states_functions.get(user_state, start)
     next_state = state_handler(update, context, host, headers)
     db.set(chat_id, next_state)
 
