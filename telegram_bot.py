@@ -28,6 +28,17 @@ def handle_menu(update, context, host, headers):
     if query.data.startswith('cart'):
         return handle_cart(update, context, host, headers)
 
+    elif query.data.startswith('back_to_menu'):
+        context.bot.delete_message(chat_id=update.effective_chat.id,
+                                   message_id=update.callback_query.message.message_id)
+        return 'HANDLE_DESCRIPTION'
+
+    elif query.data.startswith('add_to_cart'):
+        add_product_to_cart(host, query.message.chat_id, query.data, headers)
+        context.bot.delete_message(chat_id=update.effective_chat.id,
+                                   message_id=update.callback_query.message.message_id)
+        return 'HANDLE_DESCRIPTION'
+
     product = get_strapi_product(host, headers, query.data)
     image_byte = get_image_byte(host, product)
 
@@ -96,39 +107,43 @@ def handle_cart(update, context, host, headers):
 
 
 def handle_description(update, context, host, headers):
-
     if update.callback_query:
-
-        if update.callback_query.data.startswith('pay'):
-            return handle_pay(update, context, host, headers)
-
-        elif update.callback_query.data.startswith('cart'):
-            return handle_cart(update, context, host, headers)
-
-        elif update.callback_query.data.startswith('delete_products'):
-            context.bot.delete_message(chat_id=update.effective_chat.id,
-                                       message_id=update.callback_query.message.message_id)
-            return handle_delete_product_in_cart(update, context, host, headers)
-
-        elif update.callback_query.data.startswith('add_to_cart'):
-            add_product_to_cart(host, update.callback_query.message.chat_id, update.callback_query.data, headers)
-            context.bot.delete_message(chat_id=update.effective_chat.id,
-                                       message_id=update.callback_query.message.message_id)
-            return 'HANDLE_MENU'
-
-        if update.callback_query.data != 'cart':
-            context.bot.delete_message(chat_id=update.effective_chat.id,
-                                       message_id=update.callback_query.message.message_id)
+        return handle_callback_query(update, context, host, headers)
     else:
-        products = get_strapi_products(host, headers)
-        keyboard = []
-        for product in products['data']:
-            keyboard.append([InlineKeyboardButton(product['attributes']['title'], callback_data=product['id'])])
+        return handle_initial_message(update, context, host, headers)
 
-        keyboard.append([InlineKeyboardButton('Моя корзина', callback_data='cart')])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.bot.send_message(chat_id=update.effective_chat.id, text='Пожалуйста выберите:',
-                                 reply_markup=reply_markup)
+
+def handle_callback_query(update, context, host, headers):
+    query = update.callback_query
+    data = query.data
+    state = 'HANDLE_MENU'
+
+    if data.startswith('pay'):
+        state = handle_pay(update, context, host, headers)
+    elif data.startswith('cart'):
+        state = handle_cart(update, context, host, headers)
+    elif data.startswith('delete_products'):
+        state = handle_delete_product_in_cart(update, context, host, headers)
+    elif data.startswith('add_to_cart'):
+        add_product_to_cart(host, query.message.chat_id, data, headers)
+        state = 'HANDLE_DESCRIPTION'
+
+    if data.startswith('back_to_menu') or data.startswith('add_to_cart') or data.startswith('delete_products'):
+        context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
+
+    return state
+
+
+def handle_initial_message(update, context, host, headers):
+    products = get_strapi_products(host, headers)
+    keyboard = []
+
+    for product in products['data']:
+        keyboard.append([InlineKeyboardButton(product['attributes']['title'], callback_data=product['id'])])
+
+    keyboard.append([InlineKeyboardButton('Моя корзина', callback_data='cart')])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    context.bot.send_message(chat_id=update.effective_chat.id, text='Пожалуйста выберите:', reply_markup=reply_markup)
     return 'HANDLE_MENU'
 
 
@@ -182,9 +197,6 @@ def handle_users_reply(update, context, host, headers):
         user_state = 'START'
     else:
         user_state = db.get(chat_id).decode('utf-8')
-
-    print(user_reply)
-    print(user_state)
 
     states_functions = {
         'START': start,
