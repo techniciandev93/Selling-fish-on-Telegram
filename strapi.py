@@ -71,9 +71,7 @@ def create_user(host, headers, email, user_name):
         }
     }
     response = requests.post(client_strapi_url, headers=headers, json=client_fields)
-    if response.ok:
-        return True
-    return False
+    return response.ok
 
 
 def get_user_cart(host, chat_id, headers):
